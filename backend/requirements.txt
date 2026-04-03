@@ -4,8 +4,10 @@ pymongo
 pdfplumber
 docx2txt
 python-docx
-sentence-transformers
 scikit-learn
 numpy
 gunicorn
 python-dotenv
+
+sentence-transformers
+torch --index-url https://download.pytorch.org/whl/cpu
