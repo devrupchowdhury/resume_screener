@@ -5,6 +5,9 @@ Flask + MongoDB + Sentence Transformers
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from dotenv import load_dotenv
+import os
+load_dotenv()
 import os
 import uuid
 import json
@@ -29,6 +32,11 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 def health():
     return jsonify({"status": "ok", "timestamp": datetime.utcnow().isoformat()})
 
+
+CORS(app, origins=[
+    "http://localhost:3000",
+    os.getenv("FRONTEND_URL", "https://resume-screener.vercel.app")
+])
 
 # ─────────────────────────────────────────
 # JOB DESCRIPTION
