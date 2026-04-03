@@ -20,7 +20,7 @@ from services.scorer import score_resume
 from services.skill_extractor import extract_skills
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
