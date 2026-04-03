@@ -32,6 +32,9 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 def health():
     return jsonify({"status": "ok", "timestamp": datetime.utcnow().isoformat()})
 
+@app.route("/")
+def home():
+    return {"status": "ok", "message": "API is running"}
 
 CORS(app, origins=[
     "http://localhost:3000",
