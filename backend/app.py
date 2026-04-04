@@ -10,10 +10,8 @@ import os
 import uuid
 from datetime import datetime
 
-# Load env
 load_dotenv()
 
-# Services
 from database.db import get_db
 from services.resume_parser import parse_resume
 from services.jd_analyzer import analyze_job_description
@@ -24,22 +22,30 @@ from services.skill_extractor import extract_skills
 # APP CONFIG
 # ─────────────────────────────────────────
 app = Flask(__name__)
+CORS(app)
 
-# ✅ Single CORS config (fixed)
-CORS(app, resources={r"/api/*": {"origins": "*"}})
-
-# ✅ File size limit (5MB)
 app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024
 
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+
+# ── Permanent CORS headers on every response ──────────────────
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+
+
 # ─────────────────────────────────────────
-# HEALTH CHECK
+# ROUTES
 # ─────────────────────────────────────────
 @app.route("/")
 def home():
-    return jsonify({"status": "ok", "message": "API is running 🚀"})
+    return jsonify({"status": "ok", "message": "AI Resume Screener API is running!"})
+
 
 @app.route("/api/health", methods=["GET"])
 def health():
@@ -48,16 +54,17 @@ def health():
         "timestamp": datetime.utcnow().isoformat()
     })
 
+
 # ─────────────────────────────────────────
 # JOB DESCRIPTION
 # ─────────────────────────────────────────
 @app.route("/api/job", methods=["POST"])
 def create_job():
     try:
-        data = request.json
-        title = data.get("title", "").strip()
+        data        = request.json
+        title       = data.get("title", "").strip()
         description = data.get("description", "").strip()
-        company = data.get("company", "").strip()
+        company     = data.get("company", "").strip()
 
         if not title or not description:
             return jsonify({"error": "title and description are required"}), 400
@@ -65,22 +72,20 @@ def create_job():
         required_skills, keywords = analyze_job_description(description)
 
         job_doc = {
-            "_id": str(uuid.uuid4()),
-            "title": title,
-            "company": company,
-            "description": description,
+            "_id":             str(uuid.uuid4()),
+            "title":           title,
+            "company":         company,
+            "description":     description,
             "required_skills": required_skills,
-            "keywords": keywords,
-            "created_at": datetime.utcnow().isoformat(),
+            "keywords":        keywords,
+            "created_at":      datetime.utcnow().isoformat(),
         }
 
-        db = get_db()
-        db["jobs"].insert_one(job_doc)
-
+        get_db()["jobs"].insert_one(job_doc)
         return jsonify({
-            "job_id": job_doc["_id"],
+            "job_id":          job_doc["_id"],
             "required_skills": required_skills,
-            "keywords": keywords
+            "keywords":        keywords
         }), 201
 
     except Exception as e:
@@ -89,25 +94,19 @@ def create_job():
 
 @app.route("/api/job/<job_id>", methods=["GET"])
 def get_job(job_id):
-    db = get_db()
-    job = db["jobs"].find_one({"_id": job_id}, {"_id": 0})
-
+    job = get_db()["jobs"].find_one({"_id": job_id}, {"_id": 0})
     if not job:
         return jsonify({"error": "Job not found"}), 404
-
     return jsonify(job)
 
 
 @app.route("/api/jobs", methods=["GET"])
 def list_jobs():
-    db = get_db()
-    jobs = list(db["jobs"].find({}, {
-        "_id": 1,
-        "title": 1,
-        "company": 1,
-        "created_at": 1
+    jobs = list(get_db()["jobs"].find({}, {
+        "_id": 1, "title": 1, "company": 1, "created_at": 1
     }))
     return jsonify(jobs)
+
 
 # ─────────────────────────────────────────
 # RESUME SCREENING
@@ -119,9 +118,7 @@ def screen_resume():
         if not job_id:
             return jsonify({"error": "job_id is required"}), 400
 
-        db = get_db()
-        job = db["jobs"].find_one({"_id": job_id})
-
+        job = get_db()["jobs"].find_one({"_id": job_id})
         if not job:
             return jsonify({"error": "Job not found"}), 404
 
@@ -130,123 +127,95 @@ def screen_resume():
             return jsonify({"error": "No resume files uploaded"}), 400
 
         results = []
-
         for file in files:
             try:
                 resume_id = str(uuid.uuid4())
-                file_path = os.path.join(
-                    UPLOAD_FOLDER,
-                    f"{resume_id}_{file.filename}"
-                )
-
+                file_path = os.path.join(UPLOAD_FOLDER, f"{resume_id}_{file.filename}")
                 file.save(file_path)
 
-                # Parse resume
-                resume_data = parse_resume(file_path)
-
-                # Extract skills
+                resume_data      = parse_resume(file_path)
                 candidate_skills = extract_skills(resume_data.get("text", ""))
-
-                # Score resume
-                scores = score_resume(
-                    resume_text=resume_data.get("text", ""),
-                    jd_text=job["description"],
-                    required_skills=job["required_skills"],
-                    candidate_skills=candidate_skills,
+                scores           = score_resume(
+                    resume_text         = resume_data.get("text", ""),
+                    jd_text             = job["description"],
+                    required_skills     = job["required_skills"],
+                    candidate_skills    = candidate_skills,
+                    candidate_exp_years = resume_data.get("experience_years", 0),
                 )
 
                 result_doc = {
-                    "_id": resume_id,
-                    "job_id": job_id,
-                    "filename": file.filename,
-                    "candidate_name": resume_data.get("name", "Unknown"),
-                    "email": resume_data.get("email", ""),
-                    "phone": resume_data.get("phone", ""),
-                    "education": resume_data.get("education", []),
+                    "_id":              resume_id,
+                    "job_id":           job_id,
+                    "filename":         file.filename,
+                    "candidate_name":   resume_data.get("name", "Unknown"),
+                    "email":            resume_data.get("email", ""),
+                    "phone":            resume_data.get("phone", ""),
+                    "education":        resume_data.get("education", []),
                     "experience_years": resume_data.get("experience_years", 0),
                     "candidate_skills": candidate_skills,
-                    "matched_skills": scores.get("matched_skills", []),
-                    "missing_skills": scores.get("missing_skills", []),
-                    "semantic_score": scores.get("semantic_score", 0),
-                    "skill_score": scores.get("skill_score", 0),
+                    "matched_skills":   scores.get("matched_skills", []),
+                    "missing_skills":   scores.get("missing_skills", []),
+                    "semantic_score":   scores.get("semantic_score", 0),
+                    "skill_score":      scores.get("skill_score", 0),
                     "experience_score": scores.get("experience_score", 0),
-                    "final_score": scores.get("final_score", 0),
-                    "grade": scores.get("grade", ""),
-                    "explanation": scores.get("explanation", ""),
-                    "screened_at": datetime.utcnow().isoformat(),
+                    "final_score":      scores.get("final_score", 0),
+                    "grade":            scores.get("grade", ""),
+                    "explanation":      scores.get("explanation", ""),
+                    "screened_at":      datetime.utcnow().isoformat(),
                 }
 
-                db["results"].insert_one(result_doc)
+                get_db()["results"].insert_one(result_doc)
                 results.append(result_doc)
-
-                # Cleanup
                 os.remove(file_path)
 
             except Exception as file_error:
                 results.append({
                     "filename": file.filename,
-                    "error": str(file_error)
+                    "error":    str(file_error)
                 })
 
-        # Sort results
         results.sort(key=lambda x: x.get("final_score", 0), reverse=True)
-
         return jsonify({
-            "job_id": job_id,
+            "job_id":   job_id,
             "screened": len(results),
-            "results": results
+            "results":  results
         }), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 
 # ─────────────────────────────────────────
 # RESULTS
 # ─────────────────────────────────────────
 @app.route("/api/results/<job_id>", methods=["GET"])
 def get_results(job_id):
-    db = get_db()
     results = list(
-        db["results"]
+        get_db()["results"]
         .find({"job_id": job_id}, {"_id": 0})
         .sort("final_score", -1)
     )
-
-    return jsonify({
-        "job_id": job_id,
-        "total": len(results),
-        "results": results
-    })
+    return jsonify({"job_id": job_id, "total": len(results), "results": results})
 
 
 @app.route("/api/result/<result_id>", methods=["GET"])
 def get_result(result_id):
-    db = get_db()
-    result = db["results"].find_one({"_id": result_id}, {"_id": 0})
-
+    result = get_db()["results"].find_one({"_id": result_id}, {"_id": 0})
     if not result:
         return jsonify({"error": "Result not found"}), 404
-
     return jsonify(result)
 
 
 @app.route("/api/results/<job_id>/top", methods=["GET"])
 def get_top_candidates(job_id):
     n = int(request.args.get("n", 5))
-
-    db = get_db()
     results = list(
-        db["results"]
+        get_db()["results"]
         .find({"job_id": job_id}, {"_id": 0})
         .sort("final_score", -1)
         .limit(n)
     )
-
-    return jsonify({
-        "job_id": job_id,
-        "top_n": n,
-        "results": results
-    })
+    return jsonify({"job_id": job_id, "top_n": n, "results": results})
 
 
 # ─────────────────────────────────────────
