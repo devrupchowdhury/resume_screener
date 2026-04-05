@@ -1,40 +1,14 @@
 """
 services/scorer.py
-Memory-efficient scoring engine for Render free tier.
-Loads all-MiniLM-L6-v2 ONCE at startup in background thread.
-Falls back to TF-IDF if model fails to load.
+Lightweight scoring engine - TF-IDF only.
+Uses only ~50MB RAM, works perfectly on Render free tier.
+No sentence-transformers, no torch, no heavy models.
 """
 
 from __future__ import annotations
 import re
-import threading
-from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
-
-# ── Load model ONCE at startup ────────────────────────────────
-_model = None
-_model_lock = threading.Lock()
-
-def _get_model():
-    global _model
-    if _model is not None:
-        return _model
-    with _model_lock:
-        if _model is None:
-            try:
-                from sentence_transformers import SentenceTransformer
-                _model = SentenceTransformer(
-                    "all-MiniLM-L6-v2",
-                    cache_folder="/tmp/st_cache",
-                )
-                print("[scorer] Transformer model loaded OK")
-            except Exception as e:
-                print(f"[scorer] Model load failed, using TF-IDF: {e}")
-                _model = "tfidf"
-    return _model
-
-# Pre-load in background when gunicorn starts
-threading.Thread(target=_get_model, daemon=True).start()
+from sklearn.metrics.pairwise import cosine_similarity
 
 
 # ── Experience helpers ────────────────────────────────────────
@@ -63,21 +37,27 @@ def _grade(score: float) -> str:
     return "F"
 
 
-# ── Semantic similarity ───────────────────────────────────────
-def _semantic_similarity(text1: str, text2: str) -> float:
-    model = _get_model()
-    if model != "tfidf":
-        try:
-            e1 = model.encode([text1[:512]], convert_to_numpy=True)
-            e2 = model.encode([text2[:512]], convert_to_numpy=True)
-            return round(float(cosine_similarity(e1, e2)[0][0]) * 100, 2)
-        except Exception as e:
-            print(f"[scorer] Inference failed: {e}")
-    # TF-IDF fallback
+# ── TF-IDF similarity ─────────────────────────────────────────
+def _text_similarity(text1: str, text2: str) -> float:
+    """
+    Compute similarity using TF-IDF + cosine similarity.
+    Boosted by 1.35x to compensate for lower raw TF-IDF scores
+    and align with semantic similarity ranges.
+    """
     try:
-        vec = TfidfVectorizer(stop_words="english", max_features=500)
-        mat = vec.fit_transform([text1[:2000], text2[:2000]])
-        return round(float(cosine_similarity(mat[0:1], mat[1:2])[0][0]) * 100, 2)
+        vectorizer = TfidfVectorizer(
+            stop_words="english",
+            max_features=1000,
+            ngram_range=(1, 2),   # bigrams improve accuracy
+        )
+        matrix = vectorizer.fit_transform([
+            text1[:3000],
+            text2[:3000],
+        ])
+        raw = float(cosine_similarity(matrix[0:1], matrix[1:2])[0][0])
+        # Boost score to realistic range (TF-IDF raw scores are low)
+        boosted = min(raw * 1.35 * 100, 95.0)
+        return round(boosted, 2)
     except Exception:
         return 50.0
 
@@ -88,9 +68,9 @@ def _build_explanation(sem, skill, exp, final, matched, missing, grade):
         f"Overall Score: {final:.1f}/100 (Grade {grade})",
         "",
         "Score Breakdown:",
-        f"  Semantic Similarity  : {sem:.1f}/100  (40% weight)",
-        f"  Skill Match          : {skill:.1f}/100  (35% weight)",
-        f"  Experience           : {exp:.1f}/100  (25% weight)",
+        f"  Text Similarity  : {sem:.1f}/100  (40% weight)",
+        f"  Skill Match      : {skill:.1f}/100  (35% weight)",
+        f"  Experience       : {exp:.1f}/100  (25% weight)",
         "",
     ]
     if matched:
@@ -117,8 +97,10 @@ def score_resume(
     candidate_exp_years: float = 0.0,
 ) -> dict:
 
-    semantic_score = _semantic_similarity(resume_text, jd_text)
+    # 1. Text similarity
+    semantic_score = _text_similarity(resume_text, jd_text)
 
+    # 2. Skill match
     req_set    = set(s.lower() for s in required_skills)
     cand_set   = set(s.lower() for s in candidate_skills)
     matched    = sorted(req_set & cand_set)
@@ -127,9 +109,11 @@ def score_resume(
         (len(matched) / len(req_set) * 100) if req_set else 75.0, 2
     )
 
+    # 3. Experience
     required_exp = _parse_required_experience(jd_text)
     exp_score    = _experience_score(candidate_exp_years, required_exp)
 
+    # 4. Weighted final
     final_score = round(
         0.40 * semantic_score +
         0.35 * skill_score +
